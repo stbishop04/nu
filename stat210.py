@@ -1,3 +1,6 @@
+## Spring 2023 Stat 210 Project 2
+    ## Task: simulate "hot hand fallacy" using 20,000 randomly generated Monte Carlo Simulations to determine shooting percentage.
+
 import random
 #id: 3393123
 #a = 1, b = 2, c = 3
