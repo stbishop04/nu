@@ -1,0 +1,305 @@
+#lang dssl2
+
+# HW3: Dictionaries
+
+let eight_principles = ["Know your rights.",
+    "Acknowledge your sources.",
+    "Protect your work.",
+    "Avoid suspicion.",
+    "Do your own work.",
+    "Never falsify a record or permit another person to do so.",
+    "Never fabricate data, citations, or experimental results.",
+    "Always tell the truth when discussing your work with your instructor."]
+
+import sbox_hash
+
+# A signature for the dictionary ADT. The contract parameters `K` and
+# `V` are the key and value types of the dictionary, respectively.
+interface DICT[K, V]:
+    # Returns the number of key-value pairs in the dictionary.
+    def len(self) -> nat?
+    # Is the given key mapped by the dictionary?
+    def mem?(self, key: K) -> bool?
+    # Gets the value associated with the given key; calls `error` if the
+    # key is not present.
+    def get(self, key: K) -> V
+    # Modifies the dictionary to associate the given key and value. If the
+    # key already exists, its value is replaced.
+    def put(self, key: K, value: V) -> NoneC
+    # Modifes the dictionary by deleting the association of the given key.
+    def del(self, key: K) -> NoneC
+    # The following method allows dictionaries to be printed
+    def __print__(self, print)
+
+struct _kvPair:
+    let key
+    let value
+    let next: OrC(_kvPair?, NoneC)
+    
+class AssociationList[K, V] (DICT):
+    let _head
+    let size
+
+    def __init__(self):
+        self._head = None
+        self.size = 0
+
+    
+    def __print__(self, print):
+        print("#<object:AssociationList head=%p>", self._head)
+    
+    def len(self):
+        return self.size
+        
+    def mem?(self, key):
+        let temp = self._head
+        while(not (temp == None)):
+            if (temp.key == key):
+                return True
+            else:
+                temp = temp.next
+        return False
+        
+    def get(self, key):
+        let temp = self._head
+        while (not temp.key == key) and (not temp.next == None):
+            temp = temp.next
+        if temp.key == key:
+            return temp.value
+        else:
+            error("Key not in dict")
+        
+    def put(self, key, val):
+        let temp = self._head
+        if self.mem?(key):
+            while not temp.key == key:
+                temp = temp.next
+            temp.value = val
+        else:
+            self._head = _kvPair(key, val, temp)
+            self.size = self.size + 1
+        
+    def del(self, key):
+        if self._head.key == key:
+            self._head = self._head.next
+            self.size = self.size - 1
+        elif self.mem?(key):
+            let tempBef = self._head
+            let temp = self._head.next
+            
+            while not temp.key == key:
+                temp = temp.next
+                tempBef = tempBef.next
+            tempBef.next = temp.next
+            self.size = self.size - 1
+        else:
+            return
+
+test 'Test AssociationList':
+    let a = AssociationList()
+    #test empty
+    assert not a.mem?('hello')
+    assert a.len() == 0
+    assert_error a.get('hello')
+    
+    #test put, mem, len
+    a.put('hello', 5)
+    assert a.mem?('hello')
+    assert a.len() == 1
+    a.put('test2', 1)
+    assert a.mem?('test2')
+    assert a.len() == 2
+    a.put('test3', 15)
+    assert a.mem?('test3')
+    assert a.len() == 3
+    
+    #test get, put
+    assert a.get('hello') == 5
+    assert a.get('test2') == 1
+    a.put ('test2', 2)
+    assert a.get('test2') == 2
+    a.put('hello', 3)
+    assert a.get('hello') == 3
+    a.put('test3', 10)
+    assert a.get('test3') == 10
+    
+    #test del
+    a.del('hello')
+    assert a.len() == 2
+    #assert_error a.get('hello')
+    a.del('test2')
+    assert a.len() == 1
+    a.del('test3')
+    assert a.len() == 0
+    assert not a.mem?('test3')
+    
+    
+    
+
+
+class HashTable[K, V] (DICT):
+    let _hash
+    let _size
+    let _data
+    
+
+    def __init__(self, nbuckets: nat?, hash: FunC[AnyC, nat?]):
+        self._hash = hash
+        self._size = 0
+        self._data = vec(4)
+        
+
+    # This avoids trying to print the hash function, since it's not really
+    # printable and isn’t useful to see anyway:
+    def __print__(self, print):
+        print("#<object:HashTable  _hash=... _size=%p _data=%p>",
+              self._size, self._data)
+
+    def len(self):
+        return self._size
+        
+    def mem?(self, key):
+        let index = self._hash(key) % self._data.len()
+        
+        if self._data[index] == None:
+            return False
+        else:
+            let temp = self._data[index]
+            while not temp == None:
+                if temp.key == key:
+                    return True
+                else:
+                    temp = temp.next
+        return False
+        
+    def get(self, key):
+        let index = self._hash(key) % self._data.len()
+        
+        if not self.mem?(key):
+            error('key not in dictionary')
+        else:
+            let temp = self._data[index]
+            while not temp.key == key:
+                temp = temp.next
+            return temp.value
+        
+    def put(self, key, val):
+        let index = self._hash(key) % self._data.len()
+        
+        if self._data[index] == None:
+            let item = _kvPair(key, val, None)
+            self._data[index] = item
+            self._size = self._size + 1
+        elif self.mem?(key):
+            let temp = self._data[index]
+            while not temp.key == key:
+                temp = temp.next
+            temp.value = val
+        else:
+            let item = _kvPair(key, val, self._data[index])
+            self._data[index] = item
+            self._size = self._size + 1
+        
+        
+    def del(self, key):
+        let index = self._hash(key) % self._data.len()
+        let temp = self._data[index]
+        
+        if temp == None:
+            return
+        elif temp.key == key:
+            self._data[index] = self._data[index].next
+            self._size = self._size - 1
+        elif self.mem?(key):
+            let tempBef = temp
+            temp = temp.next
+            while not (temp == None) and not (temp.key == key):
+                temp = temp.next
+                tempBef = tempBef.next
+            tempBef.next = temp.next
+            self._size = self._size - 1
+        else:
+            return     
+     
+        
+# first_char_hasher(String) -> Natural
+# A simple and bad hash function that just returns the ASCII code
+# of the first character.
+# Useful for debugging because it's easily predictable.
+def first_char_hasher(s: str?) -> int?:
+    if s.len() == 0:
+        return 0
+    else:
+        return int(s[0])
+
+test 'hashTable test':
+    
+    #testing with first_char_hasher
+    let h = HashTable(10, first_char_hasher)
+    assert not h.mem?('hello')
+    h.put('hello', 5)
+    h.put('hi', 3)
+    h.put('hey', 5)
+    h.put('ah', 2)
+    
+    assert h.len() == 4
+    assert h.mem?('hey')
+    assert h.mem?('ah')
+    assert h.get('hello') == 5
+    h.put('hello', 10)
+    assert h.get('hello') == 10
+    assert h.len() == 4
+    h.del('hello')
+    assert not h.mem?('hello')
+    h.del('hey')
+    h.del('ah')
+    h.del('hi')
+    assert h.del('random') == None
+    assert h.len() == 0
+    
+    #testing with sbox_hash
+    let d = HashTable(10, make_sbox_hash())
+    assert not d.mem?('dog')
+    d.put('dog', 10)
+    d.put('cat', 5)
+    d.put('bird', 3)
+    d.put('snake', 0)
+    assert d.len() == 4
+    
+    assert d.get('dog') == 10
+    assert d.get('cat') == 5
+    assert d.get('bird') == 3
+    assert d.get('snake') == 0
+    
+    assert d.mem?('snake')
+    
+    d.del('snake')
+    assert not d.mem?('snake')
+    d.del('cat')
+    assert d.len() == 2
+    d.del('dog')
+    assert_error d.get('dog')
+    d.del('bird')
+    assert d.len() == 0
+    assert_error d.get('dog')
+
+    
+def compose_menu(d: DICT!) -> DICT?:
+    d.put('Cami', ['Spaghetti', 'Italian'])
+    d.put('Alisha', ['Sushi', 'Japanese'])
+    d.put('Linh', ['Pho', 'Vietnamese'])
+    d.put('Natti', ['Pad Khee Mao', 'Thai'])
+    d.put('Ryan', ['Pho', 'Vietnamese'])
+    return d
+
+test "AssociationList menu":
+    let menu = AssociationList()
+    compose_menu(menu)
+    
+    assert menu.get('Alisha')[0] == 'Sushi'
+
+test "HashTable menu":
+    let menu = HashTable(10, make_sbox_hash())
+    compose_menu(menu)
+    
+    assert menu.get('Cami')[0] == 'Spaghetti'

@@ -1,0 +1,376 @@
+#lang dssl2
+
+# Final project: Trip Planner
+
+import cons
+import 'project-lib/stack-queue.rkt'
+import sbox_hash
+import 'project-lib/dictionaries.rkt'
+import 'project-lib/graph.rkt'
+import 'project-lib/binheap.rkt'
+
+let eight_principles = ["Know your rights.",
+"Acknowledge your sources.",
+"Protect your work.",
+"Avoid suspicion.",
+"Do your own work.",
+"Never falsify a record or permit another person to do so.",
+"Never fabricate data, citations, or experimental results.",
+"Always tell the truth when discussing your work with your instructor."]
+
+### Basic Types ###
+
+#  - Latitudes and longitudes are numbers:
+let Lat?  = num?
+let Lon?  = num?
+
+#  - Point-of-interest categories and names are strings:
+let Cat?  = str?
+let Name? = str?
+
+### Raw Item Types ###
+
+#  - Raw positions are 2-element vectors with a latitude and a longitude
+let RawPos? = TupC[Lat?, Lon?]
+
+#  - Raw road segments are 4-element vectors with the latitude and
+#    longitude of their first endpoint, then the latitude and longitude
+#    of their second endpoint
+let RawSeg? = TupC[Lat?, Lon?, Lat?, Lon?]
+
+#  - Raw points-of-interest are 4-element vectors with a latitude, a
+#    longitude, a point-of-interest category, and a name
+let RawPOI? = TupC[Lat?, Lon?, Cat?, Name?]
+
+### Contract Helpers ###
+
+# ListC[T] is a list of `T`s (linear time):
+let ListC = Cons.ListC
+# List of unspecified element type (constant time):
+let List? = Cons.list?
+
+
+interface TRIP_PLANNER:
+        
+    # Returns the positions of all the points-of-interest that belong to
+    # the given category.
+    def locate_all(
+            self,
+            dst_cat:  Cat?           # point-of-interest category
+        )   ->        ListC[RawPos?] # positions of the POIs
+
+    # Returns the shortest route, if any, from the given source position
+    # to the point-of-interest with the given name.
+    def plan_route(
+            self,
+            src_lat:  Lat?,          # starting latitude
+            src_lon:  Lon?,          # starting longitude
+            dst_name: Name?          # name of goal
+        )   ->        ListC[RawPos?] # path to goal
+
+    # Finds no more than `n` points-of-interest of the given category
+    # nearest to the source position.
+    def find_nearby(
+            self,
+            src_lat:  Lat?,          # starting latitude
+            src_lon:  Lon?,          # starting longitude
+            dst_cat:  Cat?,          # point-of-interest category
+            n:        nat?           # maximum number of results
+        )   ->        ListC[RawPOI?] # list of nearby POIs
+
+
+
+    
+def _get_vertices(segments):
+    let coord_to_index = HashTable(3*segments.len(), make_sbox_hash())
+    let index_to_coord = vec(2*segments.len())
+    let count = 0
+    
+    for i in range(segments.len()):
+        let seg = segments[i]
+        let pos1 = [seg[0], seg[1]]
+        let pos2 = [seg[2], seg[3]]
+        if not coord_to_index.mem?(pos1):
+            coord_to_index.put(pos1, count)
+            index_to_coord[count] = pos1
+            count = count + 1
+        if not coord_to_index.mem?(pos2):
+            coord_to_index.put(pos2, count)
+            index_to_coord[count] = pos2
+            count = count + 1
+    return [coord_to_index, index_to_coord]
+    
+    
+               
+class TripPlanner (TRIP_PLANNER):
+    let _roads 
+    let _places
+    let _coords_to_verts
+    let _verts_to_coords
+    let _names_to_coords
+    let _graph
+    
+    def __init__(self, segs, ps):
+        self._roads = segs
+        self._places = ps
+        self._coords_to_verts = _get_vertices(segs)[0]
+        self._verts_to_coords = _get_vertices(segs)[1]
+        self._names_to_coords = HashTable(2*segs.len(), make_sbox_hash())
+        self._graph = WuGraph(2*segs.len())
+        
+        for p in self._places:
+            let pos = [p[0], p[1]]
+            let name = p[3]
+                
+            if not self._names_to_coords.mem?(name):
+                self._names_to_coords.put(name, pos)
+        
+        for rd in self._roads:
+            let pos1 = [rd[0], rd[1]]
+            let pos2 = [rd[2], rd[3]]
+            let vert1 = self._coords_to_verts.get(pos1)
+            let vert2 = self._coords_to_verts.get(pos2)
+            self._graph.set_edge(vert1, vert2, self._getDistance(pos1, pos2))
+            
+    def _getDistance(self, pos1, pos2):
+        let x = (pos2[0] - pos1[0]) ** 2
+        let y = (pos2[1] - pos1[1]) ** 2
+        return (x + y).sqrt()
+        
+    def locate_all(self, cat):
+        let head = None
+        let tail
+        let seen = vec(self._places.len())
+        let i = 0
+        
+        for pl in self._places:
+            if pl[2] == cat:
+                let plPos = [pl[0], pl[1]]
+                if head == None:
+                    head = cons(plPos, None)
+                    tail = head
+                    seen[i] = plPos
+                    i = i + 1
+                else:
+                    let hold = False
+                    for u in range(i):
+                        if seen[u][0] == plPos[0] and seen[u][1] == plPos[1]:
+                            hold = True
+                    if not hold:
+                        let temp = cons(plPos, None)
+                        tail.next = temp
+                        tail = temp
+                        seen[i] = plPos
+                        i = i + 1
+        return head
+        
+    def _findShortest(self, node):
+        return dijkstra(self._graph, node)
+   
+    def plan_route(self, posx, posy, name):
+        if not self._names_to_coords.mem?(name):
+            return None
+        let pos1 = [posx, posy]
+        let vert = self._coords_to_verts.get(pos1)
+        let paths = self._findShortest(vert)
+        let pred = paths[1]
+        let dist = paths[0]
+        
+        def collect_path(pred, i):
+            let path = None
+            
+            
+            while not pred[i] == None:
+                let pos2 = [self._verts_to_coords[i][0], self._verts_to_coords[i][1]]
+                path = cons(pos2, path)
+                i = pred[i]
+            if i == vert:
+                path = cons(pos1, path)
+                return path
+            else:
+                return None
+            
+        let end_loc
+        let end_vert
+        for p in self._places:
+            if p[3] == name:
+                end_loc = self._names_to_coords.get(p[3])
+                end_vert = self._coords_to_verts.get(end_loc)
+            
+        if not end_vert == None:
+            return collect_path(pred, end_vert)
+        else:
+            return None
+    
+    
+    def find_nearby(self, posx, posy, cat, n):
+        let pos1 = [posx, posy]
+        let vert = self._coords_to_verts.get(pos1)
+        let paths = self._findShortest(vert)
+        let pred = paths[0]
+        let dist = paths[1]
+        
+        let poilist = [None; self._places.len()]
+        let i1 = 0
+        for p in self._places:
+            if p[2] == cat:
+                poilist[i1] = p
+                i1 = i1 + 1       
+        let p_near = [None; self._places.len()]
+        let i2 = 0
+        for p in poilist:
+            if not p == None:
+                let pos2 = [p[0], p[1]]
+                if self._coords_to_verts.mem?(pos2):
+                    let v = self._coords_to_verts.get(pos2)
+                    let d = dist[v]
+                    if not d == None:
+                        p_near[i2] = [d, p]
+                        i2 = i2 + 1
+                else:
+                     pass
+          
+        let not_none = 0              
+        for p in p_near:
+            if not p == None:
+                not_none = not_none + 1
+            else:
+                pass
+                 
+        let p_near_final = [None; not_none]
+        let i3 = 0
+        while i3 != not_none:
+            p_near_final[i3] = p_near[i3]
+            i3 = i3 + 1
+             
+        heap_sort(p_near_final, λ a, b: a[0] < b[0])
+        let head = None
+        let tail
+        if p_near_final.len() <= n:
+          for o in p_near_final:
+              let p = o[1]
+              if head == None:
+                  head = cons(p, None)
+                  tail = head
+              else:
+                  let temp = cons(p, None)
+                  tail.next = temp
+                  tail = temp
+          return head
+        
+                   
+#HELPERS!!
+
+def dijkstra(graph, src):
+    let countVert = graph.len()
+    let dist = [inf; countVert]
+    let pred = [None; countVert]
+    
+    dist[src] = 0
+    let notDone = BinHeap(countVert, λ a, b: a[1] < b[1])
+    let done = HashTable(countVert, SboxHash64().hash)
+    
+    notDone.insert([src, 0])
+    while notDone.len() != 0:
+        let v = notDone.find_min()[0]
+        notDone.remove_min()
+        
+        if not done.mem?(v):
+            done.put(v, True)
+            let adj = graph.get_adjacent(v)
+            adj = Cons.to_vec(adj)
+            
+            for a in adj:
+                let w = graph.get_edge(v, a)
+                if dist[v] + w < dist[a]:
+                    dist[a] = dist[v] + w
+                    pred[a] = v
+                    notDone.insert([a, dist[a]])
+                elif dist[a] == None:
+                    dist[a] = dist[v] + w
+                    pred[a] = v
+                    notDone.insert([a, dist[a]])
+                    
+    return [dist, pred]
+            
+
+    
+def my_first_example():
+    return TripPlanner([[0,0, 0,1], [0,0, 1,0]],
+                       [[0,0, "bar", "The Empty Bottle"],
+                        [0,1, "food", "Pierogi"]])
+                        
+def testMap():
+    return TripPlanner([[0, 0, 0, 1], [0, 0, 1, 0],
+                       [0, 1, 1, 1], [0, 1, 0, 2],
+                       [1, 0, 1, 1], [1, 1, 1, 2],
+                       [0, 2, 1, 2], [1, 2, 1, 3]],
+                       [[0, 0, "food", "sandwiches"],
+                       [0, 1, "food", "pasta"],
+                       [0, 1, "clothes", "pants"],
+                       [1, 1, "bank", "local credit union"],
+                       [1, 3, "bar", "H Bar"]])
+                        
+
+test 'My first locate_all test':
+    assert my_first_example().locate_all("food") == \
+        cons([0,1], None)
+        
+    let tp = TripPlanner(
+      [[0, 0, 1.5, 0],
+       [1.5, 0, 2.5, 0],
+       [2.5, 0, 3, 0],
+       [4, 0, 5, 0],
+       [3, 0, 4, 0]],
+      [[1.5, 0, 'bank', 'Union'],
+       [3, 0, 'barber', 'Tony'],
+       [5, 0, 'barber', 'Judy'],
+       [5, 0, 'barber', 'Lily']])
+       
+    assert Cons.to_vec(tp.locate_all('barber')) == [[3,0], [5,0]]
+
+test 'My first plan_route test':
+   assert my_first_example().plan_route(0, 0, "Pierogi") == \
+       cons([0,0], cons([0,1], None))
+
+test 'My first find_nearby test':
+    assert my_first_example().find_nearby(0, 0, "food", 1) == \
+        cons([0,1, "food", "Pierogi"], None)
+        
+        
+    let tp = TripPlanner(
+      [[0, 0, 1.5, 0],
+       [1.5, 0, 2.5, 0],
+       [2.5, 0, 3, 0],
+       [4, 0, 5, 0]],
+      [[1.5, 0, 'bank', 'Union'],
+       [3, 0, 'barber', 'Tony'],
+       [4, 0, 'food', 'Jollibee'],
+       [5, 0, 'barber', 'Judy']])
+    #2 poi 1 reachable
+    let result = tp.find_nearby(0, 0, 'barber', 2)
+    assert Cons.to_vec(result) == [[3, 0, 'barber', 'Tony']]
+    
+    #no poi in category
+    let res2 = tp.find_nearby(0, 0, 'bar', 2)
+    assert Cons.to_vec(res2) == []
+    
+    #poi exists but not reachable
+    let res3 = tp.find_nearby(0, 0, 'food', 1)
+    assert Cons.to_vec(res3) == []
+    
+    #2 poi, limit 3
+    let tp2 = TripPlanner(
+      [[0, 0, 1.5, 0],
+       [1.5, 0, 2.5, 0],
+       [2.5, 0, 3, 0],
+       [4, 0, 5, 0],
+       [3, 0, 4, 0]],
+      [[1.5, 0, 'bank', 'Union'],
+       [3, 0, 'barber', 'Tony'],
+       [4, 0, 'food', 'Jollibee'],
+       [5, 0, 'barber', 'Judy']])
+       
+    let res4 = tp2.find_nearby(0, 0, 'barber', 3)
+    assert Cons.to_vec(res4) == [[3, 0, 'barber', 'Tony'], [5, 0, 'barber', 'Judy']]
+    
